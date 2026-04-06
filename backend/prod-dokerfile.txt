@@ -1,0 +1,46 @@
+# Build Stage
+FROM python:3.11-slim as builder
+
+WORKDIR /app
+
+# Install compilation dependencies
+RUN apt-get update && apt-get install -y gcc libpq-dev && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+
+# Build wheels (binary packages) internally for a leaner final image
+RUN pip wheel --no-cache-dir --no-deps --wheel-dir /app/wheels -r requirements.txt
+
+
+# Production Stage
+FROM python:3.11-slim
+
+# Create a non-root user
+RUN adduser --disabled-password --gecos '' appuser
+
+WORKDIR /app
+
+# Install only the runtime postgres dependency
+RUN apt-get update && apt-get install -y libpq-dev && rm -rf /var/lib/apt/lists/*
+
+# Copy pre-compiled dependencies from the builder stage
+COPY --from=builder /app/wheels /wheels
+COPY --from=builder /app/requirements.txt .
+
+# Install dependencies using those optimized wheels
+RUN pip install --no-cache-dir --no-index --find-links=/wheels -r requirements.txt
+
+# Copy source code securely
+COPY . .
+
+# Change ownership to the secure non-root user
+RUN chown -R appuser:appuser /app
+
+# Switch to the non-root user
+USER appuser
+
+# Expose standard port
+EXPOSE 8000
+
+# Use Uvicorn with parallel workers for production loads
+CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
